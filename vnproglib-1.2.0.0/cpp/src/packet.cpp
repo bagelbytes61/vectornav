@@ -2413,6 +2413,16 @@ size_t Packet::genReadYawPitchRollTrueInertialAccelerationAndAngularRates(ErrorD
 	return finalizeCommand(errorDetectionMode, buffer, length);
 }
 
+size_t Packet::genReadCompassStartupStatus(ErrorDetectionMode errorDetectionMode, char* buffer, size_t size) {
+	#if VN_HAVE_SECURE_CRT
+	size_t length = sprintf_s(buffer, size, "$VNRRG,98");
+	#else
+	size_t length = sprintf(buffer, "$VNRRG,98");
+	#endif
+
+	return finalizeCommand(errorDetectionMode, buffer, length);
+}
+
 void Packet::parseVNYPR(vec3f* yawPitchRoll)
 {
 	size_t parseIndex;
@@ -4167,6 +4177,16 @@ void Packet::parseYawPitchRollTrueInertialAccelerationAndAngularRates(vec3f* yaw
 	gyro->x = ATOFF; NEXT
 	gyro->y = ATOFF; NEXT
 	gyro->z = ATOFF;
+}
+
+void Packet::parseGNSSCompassStartupStatus(uint8_t *percentComplete, float *currentHeading)
+{
+	size_t parseIndex;
+
+	char *result = startAsciiPacketParse(_data, parseIndex);
+
+	*percentComplete = ATOU8; NEXT
+	*currentHeading = ATOFF;
 }
 
 }

@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 add_message_files(
     FILES
+    GNSSCompassStartupStatus.msg
     Ins.msg
 )
 

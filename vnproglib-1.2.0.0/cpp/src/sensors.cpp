@@ -3500,6 +3500,24 @@ YawPitchRollTrueInertialAccelerationAndAngularRatesRegister VnSensor::readYawPit
 	return reg;
 }
 
+GNSSCompassStartupStatusRegister VnSensor::readGNSSCompassStartupStatus()
+{
+	char toSend[17];
+
+	size_t length = Packet::genReadCompassStartupStatus(_pi->_sendErrorDetectionMode, toSend, sizeof(toSend));
+
+	Packet response;
+	_pi->transactionNoFinalize(toSend, length, true, &response);
+
+	GNSSCompassStartupStatusRegister reg;
+	response.parseGNSSCompassStartupStatus(
+		&reg.percentComplete,
+		&reg.currentHeading
+	);
+
+	return reg;
+}
+
 void VnSensor::switchProcessors(VnProcessorType processor, std::string model, std::string firmware)
 {
 	std::string switchCmd = "";

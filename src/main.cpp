@@ -33,6 +33,7 @@
 #include <tf2/LinearMath/Transform.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <vectornav/Ins.h>
+#include <vectornav/GNSSCompassStartupStatus.h>
 
 #include "nav_msgs/Odometry.h"
 #include "ros/ros.h"
@@ -43,7 +44,7 @@
 #include "sensor_msgs/Temperature.h"
 #include "std_srvs/Empty.h"
 
-ros::Publisher pubIMU, pubMag, pubGPS, pubOdom, pubTemp, pubPres, pubIns;
+ros::Publisher pubIMU, pubMag, pubGPS, pubOdom, pubTemp, pubPres, pubIns, pubGNSSCompassStartupStatus;
 ros::ServiceServer resetOdomSrv;
 
 XmlRpc::XmlRpcValue rpc_temp;
@@ -91,6 +92,8 @@ struct UserData
   // strides
   unsigned int imu_stride;
   unsigned int output_stride;
+
+  VnSensor *vs{nullptr};
 };
 
 // Basic loop so we can initilize our covariance parameters above
@@ -164,6 +167,7 @@ int main(int argc, char * argv[])
   pubTemp = n.advertise<sensor_msgs::Temperature>("vectornav/Temp", 1000);
   pubPres = n.advertise<sensor_msgs::FluidPressure>("vectornav/Pres", 1000);
   pubIns = n.advertise<vectornav::Ins>("vectornav/INS", 1000);
+  pubGNSSCompassStartupStatus = n.advertise<vectornav::GNSSCompassStartupStatus>("vectornav/GNSSCompassStartupStatus", 1000);
 
   resetOdomSrv = n.advertiseService<std_srvs::Empty::Request, std_srvs::Empty::Response>(
     "reset_odom", boost::bind(&resetOdom, _1, _2, &user_data));
@@ -207,6 +211,8 @@ int main(int argc, char * argv[])
 
   // Create a VnSensor object and connect to sensor
   VnSensor vs;
+
+  user_data.vs = &vs;
 
   // Default baudrate variable
   int defaultBaudrate;
@@ -722,6 +728,16 @@ void fill_ins_message(
   }
 }
 
+static void fill_gnss_compass_startup_status_message(vectornav::GNSSCompassStartupStatus & msgGNSSCompassStartupStatus, ros::Time & time, UserData * user_data)
+{
+  VnSensor &vs = *user_data->vs;
+
+  const auto reg = vs.readGNSSCompassStartupStatus();
+  msgGNSSCompassStartupStatus.header.stamp = time;
+  msgGNSSCompassStartupStatus.percentComplete = reg.percentComplete;
+  msgGNSSCompassStartupStatus.currentHeading = reg.currentHeading;
+}
+
 static ros::Time get_time_stamp(
   vn::sensors::CompositeData & cd, UserData * user_data, const ros::Time & ros_time)
 {
@@ -818,6 +834,16 @@ void BinaryAsyncMessageReceived(void * userData, Packet & p, size_t index)
       fill_ins_message(msgINS, cd, time, user_data);
       pubIns.publish(msgINS);
     }
+
+    // GNSS Compass Startup Status
+    if (
+      user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
+      pubGNSSCompassStartupStatus.getNumSubscribers() > 0) {
+      vectornav::GNSSCompassStartupStatus msgGNSSCompassStartupStatus;
+      fill_gnss_compass_startup_status_message(msgGNSSCompassStartupStatus, time, user_data);
+      pubGNSSCompassStartupStatus.publish(msgGNSSCompassStartupStatus);
+    }
   }
+
   pkg_count += 1;
 }

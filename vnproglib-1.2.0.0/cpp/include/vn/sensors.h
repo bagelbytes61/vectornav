@@ -1499,6 +1499,11 @@ public:
 	/// \return The register's values.
 	YawPitchRollTrueInertialAccelerationAndAngularRatesRegister readYawPitchRollTrueInertialAccelerationAndAngularRates();
 
+	/// \brief Reads the GNSS Compass Startup Status register.
+	///
+	/// \return The register's values.
+	GNSSCompassStartupStatusRegister readGNSSCompassStartupStatus();
+
 	/// \brief Upgrade the connected sensor with the supplied firmware file
 	///
 	/// \param[in] processor The target processor to switch to.

@@ -1407,6 +1407,14 @@ struct vn_proglib_DLLEXPORT Packet
 	/// \return The total number bytes in the generated command.
 	static size_t genReadYawPitchRollTrueInertialAccelerationAndAngularRates(ErrorDetectionMode errorDetectionMode, char* buffer, size_t size);
 
+	/// \brief Generates a command to read the GNSS Compass Startup Status register on a VectorNav sensor.
+	///
+	/// \param[in] errorDetectionMode The type of error-detection to use in generating the command.
+	/// \param[in] buffer Caller provided buffer to place the generated command.
+	/// \param[in] size Number of bytes available in the provided buffer.
+	/// \return The total number bytes in the generated command.
+	static size_t genReadCompassStartupStatus(ErrorDetectionMode errorDetectionMode, char* buffer, size_t size);
+
 	/// \}
 
 	/// \defgroup uartPacketAsciiAsyncParsers UART ASCII Asynchronous Packet Parsers
@@ -2194,6 +2202,12 @@ struct vn_proglib_DLLEXPORT Packet
 	/// \param[out] inertialAccel The register's InertialAccel field.
 	/// \param[out] gyro The register's Gyro field.
 	void parseYawPitchRollTrueInertialAccelerationAndAngularRates(vn::math::vec3f* yawPitchRoll, vn::math::vec3f* inertialAccel, vn::math::vec3f* gyro);
+
+	/// \brief Parses a response from reading the GNSS Compass Startup Status register.
+	///
+	/// \param[out] percentComplete The register's PercentComplete field.
+	/// \param[out] currentHeading The register's CurrentHeading field.
+	void parseGNSSCompassStartupStatus(uint8_t *percentComplete, float *currentHeading);
 
 	/// \}
 

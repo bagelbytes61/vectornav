@@ -1544,6 +1544,26 @@ struct YawPitchRollTrueInertialAccelerationAndAngularRatesRegister
 
 };
 
+/// \brief Structure representing the GNSS Compass Startup Status Register register.
+struct GNSSCompassStartupStatusRegister
+{
+	uint8_t percentComplete; ///< the percentComplete field.
+	float currentHeading; ///< the currentHeading field.
+
+	GNSSCompassStartupStatusRegister() { }
+
+	/// \brief Creates an initializes a new GNSSCompassStartupStatusRegister structure.
+	///
+	/// \param[in] percentCompleteIn Value to initialize the percentComplate field with.
+	/// \param[in] currentHeadingIn Value to initialize the currentHeading field with.
+	GNSSCompassStartupStatusRegister(
+		uint8_t percentCompleteIn,
+		float currentHeadingIn) :
+		percentComplete(percentCompleteIn),
+		currentHeading(currentHeadingIn)
+	{ }
+};
+
 /// \}
 
 }
