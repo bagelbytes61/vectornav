@@ -26,5 +26,7 @@ RUN printf '#!/bin/bash\nsource /catkin_ws/devel/setup.bash\nexec "$@"' > /entry
 # define entrypoint
 ENTRYPOINT ["/entrypoint.bash"]
 
+COPY run.sh /
+
 # define startup default command
-CMD ["roslaunch", "vectornav", "vectornav.launch"]
+CMD /run.sh
