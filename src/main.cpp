@@ -25,6 +25,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <mutex>
 
 // No need to define PI twice if we already have it included...
 //#define M_PI 3.14159265358979323846  /* M_PI */
@@ -32,8 +33,10 @@
 // ROS Libraries
 #include <tf2/LinearMath/Transform.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-#include <vectornav/Ins.h>
+#include <vectornav/GNSSCompassBaseline.h>
+#include <vectornav/GNSSCompassEstimatedBaseline.h>
 #include <vectornav/GNSSCompassStartupStatus.h>
+#include <vectornav/Ins.h>
 
 #include "nav_msgs/Odometry.h"
 #include "ros/ros.h"
@@ -44,10 +47,13 @@
 #include "sensor_msgs/Temperature.h"
 #include "std_srvs/Empty.h"
 
-ros::Publisher pubIMU, pubMag, pubGPS, pubOdom, pubTemp, pubPres, pubIns, pubGNSSCompassStartupStatus;
+ros::Publisher pubIMU, pubMag, pubGPSA, pubGPSB, pubOdom, pubTemp, pubPres, pubIns,
+  pubGNSSCompassStartupStatus, pubGNSSCompassBaseline, pubGNSSCompassEstimatedBaseline;
 ros::ServiceServer resetOdomSrv;
 
 XmlRpc::XmlRpcValue rpc_temp;
+
+std::mutex mut;
 
 // Include this header file to get access to VectorNav sensors.
 #include "vn/compositedata.h"
@@ -62,6 +68,8 @@ using namespace vn::xplat;
 
 // Method declarations for future use.
 void BinaryAsyncMessageReceived(void * userData, Packet & p, size_t index);
+
+static void read_gnss_compass_registers(struct UserData * user_data);
 
 // Custom user data to pass to packet callback function
 struct UserData
@@ -93,7 +101,7 @@ struct UserData
   unsigned int imu_stride;
   unsigned int output_stride;
 
-  VnSensor *vs{nullptr};
+  VnSensor * vs{nullptr};
 };
 
 // Basic loop so we can initilize our covariance parameters above
@@ -162,15 +170,21 @@ int main(int argc, char * argv[])
 
   pubIMU = n.advertise<sensor_msgs::Imu>("vectornav/IMU", 1000);
   pubMag = n.advertise<sensor_msgs::MagneticField>("vectornav/Mag", 1000);
-  pubGPS = n.advertise<sensor_msgs::NavSatFix>("vectornav/GPS", 1000);
+  pubGPSA = n.advertise<sensor_msgs::NavSatFix>("vectornav/GPSA", 1000);
+  pubGPSB = n.advertise<sensor_msgs::NavSatFix>("vectornav/GPSB", 1000);
   pubOdom = n.advertise<nav_msgs::Odometry>("vectornav/Odom", 1000);
   pubTemp = n.advertise<sensor_msgs::Temperature>("vectornav/Temp", 1000);
   pubPres = n.advertise<sensor_msgs::FluidPressure>("vectornav/Pres", 1000);
   pubIns = n.advertise<vectornav::Ins>("vectornav/INS", 1000);
-  pubGNSSCompassStartupStatus = n.advertise<vectornav::GNSSCompassStartupStatus>("vectornav/GNSSCompassStartupStatus", 1000);
+  pubGNSSCompassStartupStatus =
+    n.advertise<vectornav::GNSSCompassStartupStatus>("vectornav/GNSSCompassStartupStatus", 1000);
+  pubGNSSCompassEstimatedBaseline = n.advertise<vectornav::GNSSCompassEstimatedBaseline>(
+    "vectornav/GNSSCompassEstimatedBaseline", 1000);
+  pubGNSSCompassBaseline =
+    n.advertise<vectornav::GNSSCompassBaseline>("vectornav/GNSSCompassBaseline", 1000);
 
   resetOdomSrv = n.advertiseService<std_srvs::Empty::Request, std_srvs::Empty::Response>(
-    "reset_odom", boost::bind(&resetOdom, _1, _2, &user_data));
+    "reset_odom", boost::bind(&resetOdom, boost::placeholders::_1, boost::placeholders::_2, &user_data));
 
   // Serial Port Settings
   string SensorPort;
@@ -180,6 +194,8 @@ int main(int argc, char * argv[])
 
   // Sensor IMURATE (800Hz by default, used to configure device)
   int SensorImuRate;
+
+  ROS_INFO("IS THIS ACTUALLY RUNNING?????????????");
 
   // Load all params
   pn.param<std::string>("map_frame_id", user_data.map_frame_id, "map");
@@ -312,13 +328,17 @@ int main(int argc, char * argv[])
       COMMONGROUP_POSITION | COMMONGROUP_ACCEL | COMMONGROUP_MAGPRES |
       (user_data.adjust_ros_timestamp ? COMMONGROUP_TIMESTARTUP : 0),
     TIMEGROUP_NONE | TIMEGROUP_GPSTOW | TIMEGROUP_GPSWEEK | TIMEGROUP_TIMEUTC, IMUGROUP_NONE,
-    GPSGROUP_NONE,
+    GPSGROUP_POSLLA,
     ATTITUDEGROUP_YPRU,  //<-- returning yaw pitch roll uncertainties
     INSGROUP_INSSTATUS | INSGROUP_POSECEF | INSGROUP_VELBODY | INSGROUP_ACCELECEF |
       INSGROUP_VELNED | INSGROUP_POSU | INSGROUP_VELU,
-    GPSGROUP_NONE);
+    GPSGROUP_POSLLA);
 
   // An empty output register for disabling output 2 and 3 if previously set
+  BinaryOutputRegister bor_gps(
+    ASYNCMODE_PORT1, 200, COMMONGROUP_NONE, TIMEGROUP_NONE, IMUGROUP_NONE, GPSGROUP_POSLLA, ATTITUDEGROUP_NONE,
+    INSGROUP_NONE, GPSGROUP_POSLLA);
+
   BinaryOutputRegister bor_none(
     0, 1, COMMONGROUP_NONE, TIMEGROUP_NONE, IMUGROUP_NONE, GPSGROUP_NONE, ATTITUDEGROUP_NONE,
     INSGROUP_NONE, GPSGROUP_NONE);
@@ -329,6 +349,11 @@ int main(int argc, char * argv[])
 
   // Register async callback function
   vs.registerAsyncPacketReceivedHandler(&user_data, BinaryAsyncMessageReceived);
+
+  // auto gnss_compass_reg_timer = n.createTimer(
+  //   ros::Duration(1.0),
+  //   [&user_data](const ros::TimerEvent &) { read_gnss_compass_registers(&user_data); });
+  // gnss_compass_reg_timer.start();
 
   // You spin me right round, baby
   // Right round like a record, baby
@@ -458,40 +483,77 @@ void fill_mag_message(
 
 //Helper function to create gps message
 void fill_gps_message(
-  sensor_msgs::NavSatFix & msgGPS, vn::sensors::CompositeData & cd, ros::Time & time,
-  UserData * user_data)
+  sensor_msgs::NavSatFix & msgGPSA, sensor_msgs::NavSatFix & msgGPSB,
+  vn::sensors::CompositeData & cd, ros::Time & time, UserData * user_data)
 {
-  msgGPS.header.stamp = time;
-  msgGPS.header.frame_id = user_data->frame_id;
+  msgGPSA.header.stamp = time;
+  msgGPSA.header.frame_id = user_data->frame_id;
 
-  if (cd.hasPositionEstimatedLla()) {
-    vec3d lla = cd.positionEstimatedLla();
+  if (cd.hasPositionGpsLla()) {
+    vec3d lla = cd.positionGpsLla();
 
-    msgGPS.latitude = lla[0];
-    msgGPS.longitude = lla[1];
-    msgGPS.altitude = lla[2];
+    msgGPSA.latitude = lla[0];
+    msgGPSA.longitude = lla[1];
+    msgGPSA.altitude = lla[2];
 
-    // Read the estimation uncertainty (1 Sigma) from the sensor and write it to the covariance matrix.
-    if (cd.hasPositionUncertaintyEstimated()) {
-      double posVariance = pow(cd.positionUncertaintyEstimated(), 2);
-      msgGPS.position_covariance[0] = posVariance;  // East position variance
-      msgGPS.position_covariance[4] = posVariance;  // North position vaciance
-      msgGPS.position_covariance[8] = posVariance;  // Up position variance
+    // // Read the estimation uncertainty (1 Sigma) from the sensor and write it to the covariance matrix.
+    // if (cd.hasPositionUncertaintyEstimated()) {
+    //   double posVariance = pow(cd.positionUncertaintyEstimated(), 2);
+    //   msgGPSA.position_covariance[0] = posVariance;  // East position variance
+    //   msgGPSA.position_covariance[4] = posVariance;  // North position vaciance
+    //   msgGPSA.position_covariance[8] = posVariance;  // Up position variance
 
-      // mark gps fix as not available if the outputted standard deviation is 0
-      if (cd.positionUncertaintyEstimated() != 0.0) {
-        // Position available
-        msgGPS.status.status = sensor_msgs::NavSatStatus::STATUS_FIX;
-      } else {
-        // position not detected
-        msgGPS.status.status = sensor_msgs::NavSatStatus::STATUS_NO_FIX;
-      }
+    //   // mark gps fix as not available if the outputted standard deviation is 0
+    //   if (cd.positionUncertaintyEstimated() != 0.0) {
+    //     // Position available
+    //     msgGPSA.status.status = sensor_msgs::NavSatStatus::STATUS_FIX;
+    //   } else {
+    //     // position not detected
+    //     msgGPSA.status.status = sensor_msgs::NavSatStatus::STATUS_NO_FIX;
+    //   }
 
-      // add the type of covariance to the gps message
-      msgGPS.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_DIAGONAL_KNOWN;
-    } else {
-      msgGPS.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_UNKNOWN;
-    }
+    //   // add the type of covariance to the gps message
+    //   msgGPSA.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_DIAGONAL_KNOWN;
+    // } else {
+    //   msgGPSA.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_UNKNOWN;
+    // }
+
+    msgGPSA.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_UNKNOWN;
+  }
+
+  msgGPSB.header.stamp = time;
+  msgGPSB.header.frame_id = user_data->frame_id;
+
+  if (cd.hasPositionGps2Lla()) {
+    vec3d lla = cd.positionGps2Lla();
+
+    msgGPSB.latitude = lla[0];
+    msgGPSB.longitude = lla[1];
+    msgGPSB.altitude = lla[2];
+
+    // // Read the estimation uncertainty (1 Sigma) from the sensor and write it to the covariance matrix.
+    // if (cd.hasPositionUncertaintyEstimated()) {
+    //   double posVariance = pow(cd.positionUncertaintyEstimated(), 2);
+    //   msgGPSB.position_covariance[0] = posVariance;  // East position variance
+    //   msgGPSB.position_covariance[4] = posVariance;  // North position vaciance
+    //   msgGPSB.position_covariance[8] = posVariance;  // Up position variance
+
+    //   // mark gps fix as not available if the outputted standard deviation is 0
+    //   if (cd.positionUncertaintyEstimated() != 0.0) {
+    //     // Position available
+    //     msgGPSB.status.status = sensor_msgs::NavSatStatus::STATUS_FIX;
+    //   } else {
+    //     // position not detected
+    //     msgGPSB.status.status = sensor_msgs::NavSatStatus::STATUS_NO_FIX;
+    //   }
+
+    //   // add the type of covariance to the gps message
+    //   msgGPSB.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_DIAGONAL_KNOWN;
+    // } else {
+    //   msgGPSB.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_UNKNOWN;
+    // }
+
+    msgGPSB.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_UNKNOWN;
   }
 }
 
@@ -728,14 +790,70 @@ void fill_ins_message(
   }
 }
 
-static void fill_gnss_compass_startup_status_message(vectornav::GNSSCompassStartupStatus & msgGNSSCompassStartupStatus, ros::Time & time, UserData * user_data)
+static void fill_gnss_compass_startup_status_message(
+  vectornav::GNSSCompassStartupStatus & msgGNSSCompassStartupStatus, ros::Time & time,
+  UserData * user_data)
 {
-  VnSensor &vs = *user_data->vs;
+  VnSensor & vs = *user_data->vs;
 
-  const auto reg = vs.readGNSSCompassStartupStatus();
-  msgGNSSCompassStartupStatus.header.stamp = time;
-  msgGNSSCompassStartupStatus.percentComplete = reg.percentComplete;
-  msgGNSSCompassStartupStatus.currentHeading = reg.currentHeading;
+  ROS_INFO("READING GNSS COMPASS STARTUP STATUS REGISTER!!!");
+  try {
+    const auto reg = vs.readGNSSCompassStartupStatus();
+    ROS_INFO("READ SUCCESSFULLY!!!");
+    msgGNSSCompassStartupStatus.header.stamp = time;
+    msgGNSSCompassStartupStatus.header.frame_id = user_data->frame_id;
+    msgGNSSCompassStartupStatus.percentComplete = reg.percentComplete;
+    msgGNSSCompassStartupStatus.currentHeading = reg.currentHeading;
+  } catch (const vn::sensors::sensor_error & err) {
+    ROS_ERROR("FAILED TO READ GNSS COMPASS STARTUP STATUS REGISTER!!! %s", err.what());
+  }
+}
+
+static void fill_gnss_compass_baseline_message(
+  vectornav::GNSSCompassBaseline & msgGNSSCompassBaseline, ros::Time & time, UserData * user_data)
+{
+  VnSensor & vs = *user_data->vs;
+
+  ROS_INFO("READING GNSS COMPASS BASELINE REGISTER!!!");
+  try {
+    const auto reg = vs.readGpsCompassBaseline();
+    ROS_INFO("READ SUCCESSFULLY!!!");
+    msgGNSSCompassBaseline.header.stamp = time;
+    msgGNSSCompassBaseline.header.frame_id = user_data->frame_id;
+    msgGNSSCompassBaseline.positionX = reg.position.x;
+    msgGNSSCompassBaseline.positionY = reg.position.y;
+    msgGNSSCompassBaseline.positionZ = reg.position.z;
+    msgGNSSCompassBaseline.uncertaintyX = reg.uncertainty.x;
+    msgGNSSCompassBaseline.uncertaintyY = reg.uncertainty.y;
+    msgGNSSCompassBaseline.uncertaintyZ = reg.uncertainty.z;
+  } catch (const vn::sensors::sensor_error & err) {
+    ROS_ERROR("FAILED TO READ GNSS COMPASS BASELINE REGISTER!!! %s", err.what());
+  }
+}
+
+static void fill_gnss_compass_estimated_baseline_message(
+  vectornav::GNSSCompassEstimatedBaseline & msgGNSSCompassEstimatedBaseline, ros::Time & time,
+  UserData * user_data)
+{
+  VnSensor & vs = *user_data->vs;
+
+  ROS_INFO("READING GNSS COMPASS ESTIMATED BASELINE REGISTER!!!");
+  try {
+    const auto reg = vs.readGpsCompassEstimatedBaseline();
+    ROS_INFO("READ SUCCESSFULLY!!!");
+    msgGNSSCompassEstimatedBaseline.header.stamp = time;
+    msgGNSSCompassEstimatedBaseline.header.frame_id = user_data->frame_id;
+    msgGNSSCompassEstimatedBaseline.estBaselineUsed = reg.estBaselineUsed;
+    msgGNSSCompassEstimatedBaseline.numMeas = reg.numMeas;
+    msgGNSSCompassEstimatedBaseline.positionX = reg.position.x;
+    msgGNSSCompassEstimatedBaseline.positionY = reg.position.y;
+    msgGNSSCompassEstimatedBaseline.positionZ = reg.position.z;
+    msgGNSSCompassEstimatedBaseline.uncertaintyX = reg.uncertainty.x;
+    msgGNSSCompassEstimatedBaseline.uncertaintyY = reg.uncertainty.y;
+    msgGNSSCompassEstimatedBaseline.uncertaintyZ = reg.uncertainty.z;
+  } catch (const vn::sensors::sensor_error & err) {
+    ROS_ERROR("FAILED TO READ GNSS COMPASS ESTIMATED BASELINE REGISTER!!! %s", err.what());
+  }
 }
 
 static ros::Time get_time_stamp(
@@ -769,81 +887,137 @@ static ros::Time get_time_stamp(
 //
 void BinaryAsyncMessageReceived(void * userData, Packet & p, size_t index)
 {
-  // package counter to calculate strides
-  static unsigned long long pkg_count = 0;
+  auto lock = std::unique_lock<std::mutex>(mut);
 
-  // evaluate time first, to have it as close to the measurement time as possible
-  const ros::Time ros_time = ros::Time::now();
+  ROS_INFO("BinaryAsyncMessageReceived!!!");
 
-  vn::sensors::CompositeData cd = vn::sensors::CompositeData::parse(p);
-  UserData * user_data = static_cast<UserData *>(userData);
-  ros::Time time = get_time_stamp(cd, user_data, ros_time);
+  try {
+    // package counter to calculate strides
+    static unsigned long long pkg_count = 0;
 
-  // IMU
-  if ((pkg_count % user_data->imu_stride) == 0 && pubIMU.getNumSubscribers() > 0) {
-    sensor_msgs::Imu msgIMU;
-    fill_imu_message(msgIMU, cd, time, user_data);
-    pubIMU.publish(msgIMU);
+    // evaluate time first, to have it as close to the measurement time as possible
+    const ros::Time ros_time = ros::Time::now();
+
+    vn::sensors::CompositeData cd = vn::sensors::CompositeData::parse(p);
+    UserData * user_data = static_cast<UserData *>(userData);
+    ros::Time time = get_time_stamp(cd, user_data, ros_time);
+
+    // IMU
+    if ((pkg_count % user_data->imu_stride) == 0 && pubIMU.getNumSubscribers() > 0) {
+      sensor_msgs::Imu msgIMU;
+      fill_imu_message(msgIMU, cd, time, user_data);
+      pubIMU.publish(msgIMU);
+    }
+
+    if ((pkg_count % user_data->output_stride) == 0) {
+      // Magnetic Field
+      if (pubMag.getNumSubscribers() > 0) {
+        sensor_msgs::MagneticField msgMag;
+        fill_mag_message(msgMag, cd, time, user_data);
+        pubMag.publish(msgMag);
+      }
+
+      // Temperature
+      if (pubTemp.getNumSubscribers() > 0) {
+        sensor_msgs::Temperature msgTemp;
+        fill_temp_message(msgTemp, cd, time, user_data);
+        pubTemp.publish(msgTemp);
+      }
+
+      // Barometer
+      if (pubPres.getNumSubscribers() > 0) {
+        sensor_msgs::FluidPressure msgPres;
+        fill_pres_message(msgPres, cd, time, user_data);
+        pubPres.publish(msgPres);
+      }
+
+      ROS_INFO("Num GPSA Subs: %d", pubGPSA.getNumSubscribers());
+      ROS_INFO("Num GPSB Subs: %d", pubGPSB.getNumSubscribers());
+
+      // GPS
+      if (
+        user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
+        (pubGPSA.getNumSubscribers() > 0 || pubGPSB.getNumSubscribers() > 0)) {
+        sensor_msgs::NavSatFix msgGPSA, msgGPSB;
+        fill_gps_message(msgGPSA, msgGPSB, cd, time, user_data);
+
+        if (pubGPSA.getNumSubscribers() > 0) {
+          pubGPSA.publish(msgGPSA);
+        }
+
+        if (pubGPSB.getNumSubscribers() > 0) {
+          pubGPSB.publish(msgGPSB);
+        }
+      }
+
+      // Odometry
+      if (
+        user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
+        pubOdom.getNumSubscribers() > 0) {
+        nav_msgs::Odometry msgOdom;
+        fill_odom_message(msgOdom, cd, time, user_data);
+        pubOdom.publish(msgOdom);
+      }
+
+      // INS
+      if (
+        user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
+        pubIns.getNumSubscribers() > 0) {
+        vectornav::Ins msgINS;
+        fill_ins_message(msgINS, cd, time, user_data);
+        pubIns.publish(msgINS);
+      }
+    }
+
+    pkg_count += 1;
+  } catch (const std::exception & ex) {
+    ROS_ERROR("UNHANDLED EXCEPTION!!! %s", ex.what());
   }
+}
 
-  if ((pkg_count % user_data->output_stride) == 0) {
-    // Magnetic Field
-    if (pubMag.getNumSubscribers() > 0) {
-      sensor_msgs::MagneticField msgMag;
-      fill_mag_message(msgMag, cd, time, user_data);
-      pubMag.publish(msgMag);
-    }
+static void read_gnss_compass_registers(UserData * user_data)
+{
+  auto lock = std::unique_lock<std::mutex>(mut);
 
-    // Temperature
-    if (pubTemp.getNumSubscribers() > 0) {
-      sensor_msgs::Temperature msgTemp;
-      fill_temp_message(msgTemp, cd, time, user_data);
-      pubTemp.publish(msgTemp);
-    }
+  auto time = ros::Time::now();
 
-    // Barometer
-    if (pubPres.getNumSubscribers() > 0) {
-      sensor_msgs::FluidPressure msgPres;
-      fill_pres_message(msgPres, cd, time, user_data);
-      pubPres.publish(msgPres);
-    }
-
-    // GPS
-    if (
-      user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
-      pubGPS.getNumSubscribers() > 0) {
-      sensor_msgs::NavSatFix msgGPS;
-      fill_gps_message(msgGPS, cd, time, user_data);
-      pubGPS.publish(msgGPS);
-    }
-
-    // Odometry
-    if (
-      user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
-      pubOdom.getNumSubscribers() > 0) {
-      nav_msgs::Odometry msgOdom;
-      fill_odom_message(msgOdom, cd, time, user_data);
-      pubOdom.publish(msgOdom);
-    }
-
-    // INS
-    if (
-      user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
-      pubIns.getNumSubscribers() > 0) {
-      vectornav::Ins msgINS;
-      fill_ins_message(msgINS, cd, time, user_data);
-      pubIns.publish(msgINS);
-    }
-
-    // GNSS Compass Startup Status
+  // GNSS Compass Startup Status
+  try {
+    ROS_INFO(
+      "There are %d subscribers to /vectornav/GNSSCompassStartupStatus",
+      pubGNSSCompassStartupStatus.getNumSubscribers());
     if (
       user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
       pubGNSSCompassStartupStatus.getNumSubscribers() > 0) {
       vectornav::GNSSCompassStartupStatus msgGNSSCompassStartupStatus;
       fill_gnss_compass_startup_status_message(msgGNSSCompassStartupStatus, time, user_data);
+      ROS_INFO("GNSS COMPASS STARTUP STATUS BEFORE PUBLISH!!!");
       pubGNSSCompassStartupStatus.publish(msgGNSSCompassStartupStatus);
+      ROS_INFO("Published GNSS Compass Startup Status!!");
     }
-  }
 
-  pkg_count += 1;
+    // GNSS Compass Estimated Baseline
+    // if (
+    // user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
+    // pubGNSSCompassBaseline.getNumSubscribers() > 0) {
+    ROS_INFO("TRYING TO PUBLISH GNSS COMPASS BASELINE!");
+    vectornav::GNSSCompassBaseline msgGNSSCompassBaseline;
+    fill_gnss_compass_baseline_message(msgGNSSCompassBaseline, time, user_data);
+    pubGNSSCompassBaseline.publish(msgGNSSCompassBaseline);
+    ROS_INFO("Published GNSS Compass Baseline!");
+    // }
+
+    // GNSS Compass Estimated Baseline
+    if (
+      user_data->device_family != VnSensor::Family::VnSensor_Family_Vn100 &&
+      pubGNSSCompassEstimatedBaseline.getNumSubscribers() > 0) {
+      vectornav::GNSSCompassEstimatedBaseline msgGNSSCompassEstimatedBaseline;
+      fill_gnss_compass_estimated_baseline_message(
+        msgGNSSCompassEstimatedBaseline, time, user_data);
+      pubGNSSCompassEstimatedBaseline.publish(msgGNSSCompassEstimatedBaseline);
+      ROS_INFO("Published GNSS Compass Estimated Baseline!");
+    }
+  } catch (const std::exception & ex) {
+    ROS_ERROR("Could not read GNSS compass registers: %s", ex.what());
+  }
 }

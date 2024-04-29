@@ -6,7 +6,7 @@ SHELL ["/bin/bash","-c"]
 # install build packages
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        make g++ cmake ros-noetic-tf2 ros-noetic-tf2-geometry-msgs && \
+        nano make g++ cmake ros-noetic-tf2 ros-noetic-tf2-geometry-msgs && \
     rm -rf /var/lib/apt/lists/*
 
 # copy vectornav repo to workspace

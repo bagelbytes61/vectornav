@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 2.8.3)
 # Compile options so compiles with ROS Kinetic
 # Future releases may want to 
-add_compile_options(-std=c++11)
+add_compile_options(-std=c++17)
 project(vectornav)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
-## is used, also find other catkin packages
+## is used, also find other catkinpackages
 find_package(catkin REQUIRED COMPONENTS
     roscpp
     message_generation
@@ -14,6 +14,8 @@ find_package(catkin REQUIRED COMPONENTS
 
 add_message_files(
     FILES
+    GNSSCompassBaseline.msg
+    GNSSCompassEstimatedBaseline.msg
     GNSSCompassStartupStatus.msg
     Ins.msg
 )
